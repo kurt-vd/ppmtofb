@@ -14,7 +14,7 @@
 
 /* ARGUMENTS */
 static const char help_msg[] =
-	NAME ": Convert PPM to framebuffer (16bit) raw files\n"
+	NAME ": Convert PPM to framebuffer (raw)\n"
 	"Usage: " NAME " [INPUT]\n"
 	;
 
