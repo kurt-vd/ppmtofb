@@ -105,7 +105,7 @@ int main (int argc, char *argv[])
 	++str;
 	off = str - (char *)dat;
 
-	if (max >= 255)
+	if (max > 255)
 		error(1, 0, "maxval(%u) > 255", max);
 
 	d8 = (uint8_t *)str;
