@@ -97,7 +97,7 @@ int main (int argc, char *argv[])
 		error(1, errno, "read file %s", argv[optind]);
 
 	str = (void *)dat;
-	if (!strncmp(str, "P6", 2))
+	if (strncmp(str, "P6", 2))
 		error(1, errno, "no PPM file");
 	w = strtoul(str+2, &str, 0);
 	h = strtoul(str, &str, 0);
