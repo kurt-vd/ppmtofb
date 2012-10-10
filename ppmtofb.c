@@ -16,12 +16,17 @@
 static const char help_msg[] =
 	NAME ": Convert PPM to framebuffer (raw)\n"
 	"Usage: " NAME " [INPUT]\n"
+	"\n"
+	"Options:\n"
+	" -t, --type=TYPE	Use VAL bits per pixel (rgb565*, rgb, rgba)\n"
 	;
 
 #ifdef _GNU_SOURCE
 static const struct option long_opts[] = {
 	{ "help", no_argument, NULL, '?', },
 	{ "version", no_argument, NULL, 'V', },
+
+	{ "type", required_argument, NULL, 't', },
 	{ },
 };
 
@@ -30,7 +35,7 @@ static const struct option long_opts[] = {
 	getopt((argc), (argv), (optstring))
 #endif
 
-static const char optstring[] = "?Vv";
+static const char optstring[] = "?Vvt:";
 
 int readallocfile(uint8_t **dat, const char *filename)
 {
@@ -72,13 +77,49 @@ int readallocfile(uint8_t **dat, const char *filename)
 	return ret;
 }
 
+static int putrgb565(int r, int g, int b)
+{
+	uint16_t val;
+
+	val = ((r & 0xf8) << 8) |
+		((g & 0xfc) << 2) |
+		((b & 0xf8) >> 3);
+	return fwrite(&val, sizeof(val), 1, stdout);
+}
+
+static int putrgb(int r, int g, int b)
+{
+	uint8_t val[3] = { r, g, b, };
+
+	return fwrite(&val, sizeof(val), 1, stdout);
+}
+
+static int putrgba(int r, int g, int b)
+{
+	uint8_t val[4] = { r, g, b, 0, };
+
+	return fwrite(&val, sizeof(val), 1, stdout);
+}
+
+struct puttype {
+	const char *name;
+	int (*fn)(int r, int g, int b);
+};
+
+static const struct puttype puttypes[] = {
+	{ "rgb565", putrgb565, },
+	{ "rgb", putrgb, },
+	{ "rgba", putrgba, },
+	{},
+};
+
 int main (int argc, char *argv[])
 {
-	int opt, size, off, max;
+	int opt, size, off, max, j;
 	char *str;
 	uint8_t *dat = NULL, *d8;
-	uint16_t u16;
 	int w, h, r, c;
+	int (*put)(int r, int g, int b) = puttypes[0].fn;
 
 	/* argument parsing */
 	while ((opt = getopt_long(argc, argv, optstring, long_opts, NULL)) != -1)
@@ -86,6 +127,16 @@ int main (int argc, char *argv[])
 	case 'V':
 		fprintf(stderr, "%s %s\n", NAME, VERSION);
 		return 0;
+	case 't':
+		for (j = 0; puttypes[j].name; ++j) {
+			if (!strcasecmp(puttypes[j].name, optarg)) {
+				put = puttypes[j].fn;
+				goto type_found;
+			}
+		}
+		error(1, 0, "bpp '%s' not supported", optarg);
+		type_found:
+		break;
 	default:
 		fputs(help_msg, stderr);
 		exit(1);
@@ -110,12 +161,8 @@ int main (int argc, char *argv[])
 
 	d8 = (uint8_t *)str;
 	for (r = 0; r < h; ++r) {
-		for (c = 0; c < w; ++c, d8 +=3) {
-			u16 = ((d8[0] & 0xf8) << 8) |
-				((d8[1] & 0xfc) << 2) |
-				((d8[2] & 0xf8) >> 3);
-			fwrite(&u16, sizeof(u16), 1, stdout);
-		}
+		for (c = 0; c < w; ++c, d8 +=3)
+			put(d8[0], d8[1], d8[2]);
 	}
 	fflush(stdout);
 	return 0;
