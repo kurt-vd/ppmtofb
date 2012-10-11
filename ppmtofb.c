@@ -392,7 +392,7 @@ int main (int argc, char *argv[])
 		/* copy ppm to fb */
 		char *str;
 		int imgw, ppmbypp;
-		uint8_t *dat, *d8;
+		uint8_t *dat = NULL, *d8;
 
 		if (verbose)
 			error(0, 0, "PPM -> FB");
