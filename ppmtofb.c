@@ -235,7 +235,7 @@ static int getfbinfo(int fd)
 	return 0;
 }
 
-static uint8_t *getvideomemory(int fd)
+static uint8_t *getvideomemory(int fd, int wr)
 {
 	size_t len, offset;
 	uint8_t *mem;
@@ -245,7 +245,7 @@ static uint8_t *getvideomemory(int fd)
 	len = fix_info.line_length * var_info.yres;
 	if (verbose)
 		error(0, 0, "mapping video memory +%uKB", len/1024); 
-	mem = mmap(NULL, len, PROT_READ, MAP_SHARED, fd, offset);
+	mem = mmap(NULL, len, wr ? PROT_WRITE : PROT_READ, MAP_SHARED, fd, offset);
 
 	if (mem == MAP_FAILED)
 		error(1, errno, "mmap failed");
@@ -381,7 +381,7 @@ int main (int argc, char *argv[])
 	if (argv[optind] && argv[optind+1] && strcmp(argv[optind+1], "-")) {
 		int fd;
 
-		fd = open(argv[optind+1], O_WRONLY | O_CREAT | O_TRUNC, 0666);
+		fd = open(argv[optind+1], O_RDWR | O_CREAT | O_TRUNC, 0666);
 		if (fd < 0)
 			error(1, errno, "open %s", argv[optind+1]);
 		dup2(fd, STDOUT_FILENO);
@@ -414,7 +414,7 @@ int main (int argc, char *argv[])
 		if (w > var_info.xres)
 			w = var_info.xres;
         
-		getvideomemory(STDOUT_FILENO);
+		getvideomemory(STDOUT_FILENO, 1);
 
 		d8 = (uint8_t *)str;
 		ppmbypp = (max > 255) ? 6 : 3;
@@ -430,7 +430,7 @@ int main (int argc, char *argv[])
 		/* copy fb to ppm */
 		if (verbose)
 			error(0, 0, "FB -> PPM");
-		getvideomemory(STDIN_FILENO);
+		getvideomemory(STDIN_FILENO, 0);
 		w = var_info.xres;
 		h = var_info.yres;
 
