@@ -445,6 +445,8 @@ int main (int argc, char *argv[])
 				putppmpixel(getfbpixel(c, r));
 		}
 		putvideomemory();
+	} else {
+		error(1, errno, "no framebuffer on stdin or stdout?");
 	}
 	fflush(stdout);
 	return 0;
