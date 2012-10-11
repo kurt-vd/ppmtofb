@@ -369,7 +369,7 @@ int main (int argc, char *argv[])
 	}
 
 	/* redir stdout/stdin */
-	if (argv[optind]) {
+	if (argv[optind] && strcmp(argv[optind], "-")) {
 		int fd;
 
 		fd = open(argv[optind], O_RDONLY);
@@ -378,7 +378,7 @@ int main (int argc, char *argv[])
 		dup2(fd, STDIN_FILENO);
 		close(fd);
 	}
-	if (argv[optind] && argv[optind+1]) {
+	if (argv[optind] && argv[optind+1] && strcmp(argv[optind+1], "-")) {
 		int fd;
 
 		fd = open(argv[optind+1], O_WRONLY | O_CREAT | O_TRUNC, 0666);
