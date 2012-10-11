@@ -8,25 +8,80 @@
 #include <fcntl.h>
 #include <error.h>
 #include <getopt.h>
+#include <endian.h>
+#include <byteswap.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <linux/fb.h>
 
 #define NAME "ppmtofb"
 
+/* ENDIANNESS */
+#ifndef htobe32
+
+static uint32_t _swap32(uint32_t v)
+{
+	uint8_t *ptr = (void *)&v;
+	uint8_t tmp;
+
+	tmp = ptr[3];
+	ptr[3] = ptr[0];
+	ptr[0] = tmp;
+
+	tmp = ptr[2];
+	ptr[2] = ptr[1];
+	ptr[1] = tmp;
+	return v;
+}
+
+static uint16_t _swap16(uint16_t v)
+{
+	uint8_t *ptr = (void *)&v;
+	uint8_t tmp;
+
+	tmp = ptr[1];
+	ptr[1] = ptr[0];
+	ptr[0] = tmp;
+	return v;
+}
+
+#if BYTE_ORDER == LITTLE_ENDIAN
+
+#define htobe32	_swap32
+#define be32toh	_swap32
+#define htobe16	_swap16
+#define be16toh	_swap16
+#define htole32(x)	(x)
+#define le32toh(x)	(x)
+#define htole16(x)	(x)
+#define le16toh(x)	(x)
+
+#else
+
+#define htobe32(x)	(x)
+#define be32toh(x)	(x)
+#define htobe16(x)	(x)
+#define be16toh(x)	(x)
+#define htole32	_swap32
+#define le32toh	_swap32
+#define htole16	_swap16
+#define le16toh	_swap16
+
+#endif
+#endif
 /* ARGUMENTS */
 static const char help_msg[] =
-	NAME ": Convert PPM to framebuffer (raw)\n"
-	"Usage: " NAME " [INPUT]\n"
-	"\n"
-	"Options:\n"
-	" -t, --type=TYPE	Use VAL bits per pixel (rgb565*, rgb, rgba)\n"
+	NAME ": Convert between PPM and framebuffer (raw)\n"
+	"Usage	: " NAME " [PPM [FBDEVICE]]\n"
+	"	: " NAME " [FBDEVICE [PPM]]\n"
 	;
 
 #ifdef _GNU_SOURCE
 static const struct option long_opts[] = {
 	{ "help", no_argument, NULL, '?', },
 	{ "version", no_argument, NULL, 'V', },
-
-	{ "type", required_argument, NULL, 't', },
 	{ },
 };
 
@@ -35,7 +90,9 @@ static const struct option long_opts[] = {
 	getopt((argc), (argv), (optstring))
 #endif
 
-static const char optstring[] = "?Vvt:";
+static const char optstring[] = "?Vv";
+
+static int verbose = 0;
 
 int readallocfile(uint8_t **dat, const char *filename)
 {
@@ -77,49 +134,224 @@ int readallocfile(uint8_t **dat, const char *filename)
 	return ret;
 }
 
-static int putrgb565(int r, int g, int b)
+/* interal pixel representation */
+static inline uint32_t mkpixel(int r, int g, int b, int a)
 {
-	uint16_t val;
-
-	val = ((r & 0xf8) << 8) |
-		((g & 0xfc) << 2) |
-		((b & 0xf8) >> 3);
-	return fwrite(&val, sizeof(val), 1, stdout);
+	return ((r & 0xff) << 16) | (( g & 0xff) << 8) | ((b & 0xff) << 0) | ((a & 0xff) << 24);
 }
 
-static int putrgb(int r, int g, int b)
+static inline uint8_t pixel_r(uint32_t pixel)
 {
-	uint8_t val[3] = { r, g, b, };
-
-	return fwrite(&val, sizeof(val), 1, stdout);
+	return (pixel >> 16) & 0xff;
 }
 
-static int putrgba(int r, int g, int b)
+static inline uint8_t pixel_g(uint32_t pixel)
 {
-	uint8_t val[4] = { r, g, b, 0, };
-
-	return fwrite(&val, sizeof(val), 1, stdout);
+	return (pixel >> 8) & 0xff;
 }
 
-struct puttype {
-	const char *name;
-	int (*fn)(int r, int g, int b);
+static inline uint8_t pixel_b(uint32_t pixel)
+{
+	return (pixel >> 0) & 0xff;
+}
+
+static inline uint8_t pixel_a(uint32_t pixel)
+{
+	return (pixel >> 24) & 0xff;
+}
+
+/* FB info */
+struct fb_fix_screeninfo fix_info;
+struct fb_var_screeninfo var_info;
+uint16_t colormap_data[4][1 << 8];
+struct fb_cmap colormap = {
+	0,
+	1 << 8,
+	colormap_data[0],
+	colormap_data[1],
+	colormap_data[2],
+	colormap_data[3],
 };
+static uint8_t *video;
+/* cached framebuffer bytes per pixel */
+static int fbbypp;
 
-static const struct puttype puttypes[] = {
-	{ "rgb565", putrgb565, },
-	{ "rgb", putrgb, },
-	{ "rgba", putrgba, },
-	{},
-};
+/* FRAMEBUFFER CONFIG */
+static int getfbinfo(int fd)
+{
+	unsigned int i;
+	struct stat st;
+
+	if (fstat(fd, &st) < 0)
+		error(1, errno, "fstat %i", fd);
+	if (!S_ISCHR(st.st_mode))
+		return -1;
+
+	if (ioctl(fd, FBIOGET_FSCREENINFO, &fix_info)) {
+		if (errno == ENOTTY)
+			return -1;
+		error(1, errno, "FBIOGET_FSCREENINFO failed");
+	}
+
+	if (fix_info.type != FB_TYPE_PACKED_PIXELS)
+		error(1, 0, "framebuffer type is not PACKED_PIXELS (%i)", fix_info.type);
+
+	if (ioctl(fd, FBIOGET_VSCREENINFO, &var_info))
+		error(1, errno, "FBIOGET_VSCREENINFO failed");
+
+	if (var_info.red.length > 8 || var_info.green.length > 8 || var_info.blue.length > 8)
+		error(1, 0, "color depth > 8 bits per component");
+
+	switch (fix_info.visual) {
+	case FB_VISUAL_TRUECOLOR:
+		/* initialize dummy colormap */
+		for (i = 0; i < (1 << var_info.red.length); i++)
+			colormap.red[i] = i * 0xffff / ((1 << var_info.red.length) - 1);
+		for (i = 0; i < (1 << var_info.green.length); i++)
+			colormap.green[i] = i * 0xffff / ((1 << var_info.green.length) - 1);
+		for (i = 0; i < (1 << var_info.blue.length); i++)
+			colormap.blue[i] = i * 0xffff / ((1 << var_info.blue.length) - 1);
+		break;
+	case FB_VISUAL_DIRECTCOLOR:
+	case FB_VISUAL_PSEUDOCOLOR:
+	case FB_VISUAL_STATIC_PSEUDOCOLOR:
+		if (ioctl(fd, FBIOGETCMAP, &colormap) != 0)
+			error(1, errno, "FBIOGETCMAP failed");
+		break;
+	default:
+		error(1, 0, "unsupported visual (%i)", fix_info.visual);
+	}
+	fbbypp = (var_info.bits_per_pixel +7) /8;
+
+	if (verbose) {
+		error(0, 0, "framebuffer on %s", fd ? "stdout" : "stdin");
+		error(0, 0, "%ux%u, bytes/pixel %i", var_info.xres, var_info.yres, fbbypp);
+		error(0, 0, "r %u/%u, g %u/%u, b %u/%u, a %u/%u",
+				var_info.red.length, var_info.red.offset,
+				var_info.green.length, var_info.green.offset,
+				var_info.blue.length, var_info.blue.offset,
+				var_info.transp.length, var_info.transp.offset);
+	}
+	return 0;
+}
+
+static uint8_t *getvideomemory(int fd)
+{
+	size_t len, offset;
+	uint8_t *mem;
+	
+
+	offset = fix_info.line_length * var_info.yoffset;
+	len = fix_info.line_length * var_info.yres;
+	if (verbose)
+		error(0, 0, "mapping video memory +%uKB", len/1024); 
+	mem = mmap(NULL, len, PROT_READ, MAP_SHARED, fd, offset);
+
+	if (mem == MAP_FAILED)
+		error(1, errno, "mmap failed");
+	video = mem;
+	return mem;
+}
+
+static void putvideomemory(void)
+{
+	munmap(video, fix_info.line_length*var_info.yres);
+}
+
+/* FRAMEBUFFER */
+static inline uint8_t *getfbpos(int x, int y)
+{
+	return video + (y*var_info.yoffset)*fix_info.line_length + (x+var_info.xoffset)*fbbypp;
+}
+
+static inline uint8_t getfbcolor(uint32_t pixel, const struct fb_bitfield *bitfield, const uint16_t *colormap)
+{
+	return ((pixel >> bitfield->offset) & ((1 << bitfield->length)-1)) << (8 - bitfield->length);
+	return colormap[(pixel >> bitfield->offset) & ((1 << bitfield->length) - 1)] >> 8;
+}
+
+static inline uint32_t putfbcolor(uint32_t color, const struct fb_bitfield *bitfield, const uint16_t *colormap)
+{
+	color >>= (8 - bitfield->length);
+	return color << bitfield->offset;
+}
+
+static uint32_t getfbpixel(int x, int y)
+{
+#if 0
+	void *dat = getfbpos(x, y);
+	uint32_t pixel = 0;
+
+	switch (fbbypp) {
+	case 1:
+		pixel = *(uint8_t *)dat;
+		break;
+	case 2:
+		pixel = le16toh(*(uint16_t *)dat);
+		break;
+	case 3:
+		pixel = le32toh(*(uint32_t *)dat) & 0xffffff;
+		break;
+	case 4:
+		pixel = le32toh(*(uint32_t *)dat);
+		break;
+	}
+#else
+	uint32_t pixel = 0;
+
+	memcpy(&pixel, getfbpos(x, y), fbbypp);
+	pixel = le32toh(pixel);
+#endif
+	return mkpixel(getfbcolor(pixel, &var_info.red, colormap.red),
+			getfbcolor(pixel, &var_info.green, colormap.green),
+			getfbcolor(pixel, &var_info.blue, colormap.blue),
+			getfbcolor(pixel, &var_info.transp, colormap.transp));
+}
+
+static void putfbpixel(int x, int y, const uint32_t pixel)
+{
+	uint32_t fbpixel = 0;
+
+	fbpixel |= putfbcolor(pixel_r(pixel), &var_info.red, colormap.red);
+	fbpixel |= putfbcolor(pixel_g(pixel), &var_info.green, colormap.green);
+	fbpixel |= putfbcolor(pixel_b(pixel), &var_info.blue, colormap.blue);
+	fbpixel |= putfbcolor(pixel_a(pixel), &var_info.transp, colormap.transp);
+	/* assume framebuffer is in Little Endian */
+	fbpixel = htole32(fbpixel);
+	memcpy(getfbpos(x, y), &fbpixel, fbbypp);
+}
+
+/* PPM */
+static uint32_t getppmpixel(const uint8_t *dat, int max)
+{
+	if (max == 0xff)
+		return mkpixel(dat[0], dat[1], dat[2], 0);
+	else if (max == 0xffff)
+		return mkpixel(dat[0], dat[2], dat[4], 0);
+	else if (max > 255) {
+		const uint16_t *dat16 = (const void *)dat;
+
+		return mkpixel(be16toh(dat16[0])*255/max,
+				be16toh(dat16[1])*255/max,
+				be16toh(dat16[2])*255/max,
+				0);
+	} else
+		return mkpixel(dat[0]*255/max, dat[1]*255/max,
+				dat[2]*255/max, 0);
+}
+
+static void putppmpixel(uint32_t pixel)
+{
+	pixel = htobe32(pixel);
+
+	if (fwrite(&pixel, 3/* only 3 bytes! */, 1, stdout) < 0)
+		error(1, errno, "writing pixels");
+}
 
 int main (int argc, char *argv[])
 {
-	int opt, size, off, max, j;
-	char *str;
-	uint8_t *dat = NULL, *d8;
+	int opt, size, max;
 	int w, h, r, c;
-	int (*put)(int r, int g, int b) = puttypes[0].fn;
 
 	/* argument parsing */
 	while ((opt = getopt_long(argc, argv, optstring, long_opts, NULL)) != -1)
@@ -127,15 +359,8 @@ int main (int argc, char *argv[])
 	case 'V':
 		fprintf(stderr, "%s %s\n", NAME, VERSION);
 		return 0;
-	case 't':
-		for (j = 0; puttypes[j].name; ++j) {
-			if (!strcasecmp(puttypes[j].name, optarg)) {
-				put = puttypes[j].fn;
-				goto type_found;
-			}
-		}
-		error(1, 0, "bpp '%s' not supported", optarg);
-		type_found:
+	case 'v':
+		++verbose;
 		break;
 	default:
 		fputs(help_msg, stderr);
@@ -143,26 +368,83 @@ int main (int argc, char *argv[])
 		break;
 	}
 
-	size = readallocfile(&dat, argv[optind] ?: "-");
-	if (size <= 0)
-		error(1, errno, "read file %s", argv[optind]);
+	/* redir stdout/stdin */
+	if (argv[optind]) {
+		int fd;
 
-	str = (void *)dat;
-	if (strncmp(str, "P6", 2))
-		error(1, errno, "no PPM file");
-	w = strtoul(str+2, &str, 0);
-	h = strtoul(str, &str, 0);
-	max = strtoul(str, &str, 0);
-	++str;
-	off = str - (char *)dat;
+		fd = open(argv[optind], O_RDONLY);
+		if (fd < 0)
+			error(1, errno, "open %s", argv[optind]);
+		dup2(fd, STDIN_FILENO);
+		close(fd);
+	}
+	if (argv[optind] && argv[optind+1]) {
+		int fd;
 
-	if (max > 255)
-		error(1, 0, "maxval(%u) > 255", max);
+		fd = open(argv[optind+1], O_WRONLY | O_CREAT | O_TRUNC, 0666);
+		if (fd < 0)
+			error(1, errno, "open %s", argv[optind+1]);
+		dup2(fd, STDOUT_FILENO);
+		close(fd);
+	}
 
-	d8 = (uint8_t *)str;
-	for (r = 0; r < h; ++r) {
-		for (c = 0; c < w; ++c, d8 +=3)
-			put(d8[0], d8[1], d8[2]);
+	if (getfbinfo(STDOUT_FILENO) == 0) {
+		/* copy ppm to fb */
+		char *str;
+		int imgw, ppmbypp;
+		uint8_t *dat, *d8;
+
+		if (verbose)
+			error(0, 0, "PPM -> FB");
+
+		size = readallocfile(&dat, "-");
+		if (size <= 0)
+			error(1, errno, "read file %s", argv[optind] ?: "-");
+
+		str = (void *)dat;
+		if (strncmp(str, "P6", 2))
+			error(1, errno, "no PPM file");
+		imgw = w = strtoul(str+2, &str, 0);
+		h = strtoul(str, &str, 0);
+		max = strtoul(str, &str, 0);
+		++str;
+
+		if (h > var_info.yres)
+			h = var_info.yres;
+		if (w > var_info.xres)
+			w = var_info.xres;
+        
+		getvideomemory(STDOUT_FILENO);
+
+		d8 = (uint8_t *)str;
+		ppmbypp = (max > 255) ? 6 : 3;
+		for (r = 0; r < h; ++r) {
+			for (c = 0; c < w; ++c, d8 += ppmbypp)
+				putfbpixel(c, r, getppmpixel(d8, max));
+			if (imgw > var_info.xres)
+				d8 += (imgw - var_info.xres)*ppmbypp;
+		}
+		putvideomemory();
+		free(dat);
+	} else if (getfbinfo(STDIN_FILENO) == 0) {
+		/* copy fb to ppm */
+		if (verbose)
+			error(0, 0, "FB -> PPM");
+		getvideomemory(STDIN_FILENO);
+		w = var_info.xres;
+		h = var_info.yres;
+
+		if (!w || !h)
+			error(1, 0, "width & height must be != 0");
+
+		/* PPM header */
+		printf("P6 %u %u 255\n", w, h);
+
+		for (r = 0; r < h; ++r) {
+			for (c = 0; c < w; ++c)
+				putppmpixel(getfbpixel(c, r));
+		}
+		putvideomemory();
 	}
 	fflush(stdout);
 	return 0;
