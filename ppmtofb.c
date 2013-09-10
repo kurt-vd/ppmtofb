@@ -261,7 +261,7 @@ static void putvideomemory(void)
 /* FRAMEBUFFER */
 static inline uint8_t *getfbpos(int x, int y)
 {
-	return video + (y*var_info.yoffset)*fix_info.line_length + (x+var_info.xoffset)*fbbypp;
+	return video + (y+var_info.yoffset)*fix_info.line_length + (x+var_info.xoffset)*fbbypp;
 }
 
 static inline uint8_t getfbcolor(uint32_t pixel, const struct fb_bitfield *bitfield, const uint16_t *colormap)
