@@ -1,2 +1,17 @@
+# build files
 *.o
+
+# outputs
 ppmtofb
+
+# working environment
+config.mk
+tags
+
+# test images
+*.ppm
+*.pgm
+*.pbm
+*.png
+*.jpeg
+*.jpg
