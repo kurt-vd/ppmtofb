@@ -224,7 +224,7 @@ static int getfbinfo(int fd)
 	fbbypp = (var_info.bits_per_pixel +7) /8;
 
 	if (verbose) {
-		error(0, 0, "framebuffer on %s", fd ? "stdout" : "stdin");
+		error(0, 0, "framebuffer (%s) on %s", fix_info.id, fd ? "stdout" : "stdin");
 		error(0, 0, "%ux%u, bytes/pixel %i", var_info.xres, var_info.yres, fbbypp);
 		error(0, 0, "r %u/%u, g %u/%u, b %u/%u, a %u/%u",
 				var_info.red.length, var_info.red.offset,
@@ -278,7 +278,6 @@ static inline uint32_t putfbcolor(uint32_t color, const struct fb_bitfield *bitf
 
 static uint32_t getfbpixel(int x, int y)
 {
-#if 0
 	void *dat = getfbpos(x, y);
 	uint32_t pixel = 0;
 
@@ -296,29 +295,35 @@ static uint32_t getfbpixel(int x, int y)
 		pixel = le32toh(*(uint32_t *)dat);
 		break;
 	}
-#else
-	uint32_t pixel = 0;
-
-	memcpy(&pixel, getfbpos(x, y), fbbypp);
-	pixel = le32toh(pixel);
-#endif
 	return mkpixel(getfbcolor(pixel, &var_info.red, colormap.red),
 			getfbcolor(pixel, &var_info.green, colormap.green),
 			getfbcolor(pixel, &var_info.blue, colormap.blue),
 			getfbcolor(pixel, &var_info.transp, colormap.transp));
 }
 
-static void putfbpixel(int x, int y, const uint32_t pixel)
+static void putfbpixel(int x, int y, uint32_t pixel)
 {
-	uint32_t fbpixel = 0;
+	void *dat = getfbpos(x, y);
+	uint32_t fbpixel;
 
-	fbpixel |= putfbcolor(pixel_r(pixel), &var_info.red, colormap.red);
-	fbpixel |= putfbcolor(pixel_g(pixel), &var_info.green, colormap.green);
-	fbpixel |= putfbcolor(pixel_b(pixel), &var_info.blue, colormap.blue);
-	fbpixel |= putfbcolor(pixel_a(pixel), &var_info.transp, colormap.transp);
+	fbpixel = putfbcolor(pixel_r(pixel), &var_info.red, colormap.red)
+		| putfbcolor(pixel_g(pixel), &var_info.green, colormap.green)
+		| putfbcolor(pixel_b(pixel), &var_info.blue, colormap.blue)
+		| putfbcolor(pixel_a(pixel), &var_info.transp, colormap.transp);
 	/* assume framebuffer is in Little Endian */
-	fbpixel = htole32(fbpixel);
-	memcpy(getfbpos(x, y), &fbpixel, fbbypp);
+
+	switch (fbbypp) {
+	case 1:
+		*(uint8_t *)dat = fbpixel;
+		break;
+	case 2:
+		*(uint16_t *)dat = htole16(fbpixel);
+		break;
+	case 3:
+	case 4:
+		*(uint32_t *)dat = htole32(fbpixel);
+		break;
+	}
 }
 
 /* PPM */
