@@ -105,6 +105,10 @@ static const char help_msg[] =
 	NAME ": Convert between PPM and framebuffer (raw)\n"
 	"Usage	: " NAME " [PPM [FBDEVICE]]\n"
 	"	: " NAME " [FBDEVICE [PPM]]\n"
+	"\n"
+	"Options\n"
+	" -?, --help		Show this help\n"
+	" -V, --version		Show program version\n"
 	;
 
 #ifdef _GNU_SOURCE
