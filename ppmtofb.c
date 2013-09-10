@@ -347,7 +347,7 @@ static uint32_t getppmpixel(const uint8_t *dat, int max)
 
 static void putppmpixel(uint32_t pixel)
 {
-	pixel = htobe32(pixel);
+	pixel = htobe32(pixel << 8/* skip transp */);
 
 	if (fwrite(&pixel, 3/* only 3 bytes! */, 1, stdout) < 0)
 		error(1, errno, "writing pixels");
