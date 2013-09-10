@@ -5,11 +5,12 @@
 	$ make
 	$ make install
 
-## Crosscompiling
+### Cross-Compiling
 The Makefile includes config.mk when present.
 This can modify the build in various ways:
 * alter compiler flags
 * change compiler
+* change install path
 
 Example config.mk for cross-compile:
 
