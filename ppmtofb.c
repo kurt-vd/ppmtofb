@@ -206,6 +206,8 @@ struct fb_cmap colormap = {
 	colormap_data[3],
 };
 static uint8_t *video;
+static uint8_t *videocache;
+static size_t videolen;
 /* cached framebuffer bytes per pixel */
 static int fbbypp;
 
@@ -268,33 +270,47 @@ static int getfbinfo(int fd)
 	return 0;
 }
 
-static uint8_t *getvideomemory(int fd, int wr)
+static void getvideomemory(int fd, int wr)
 {
-	size_t len, offset;
-	uint8_t *mem;
+	size_t offset;
 	
 
 	offset = fix_info.line_length * var_info.yoffset;
-	len = fix_info.line_length * var_info.yres;
+	videolen = fix_info.line_length * var_info.yres;
 	if (verbose)
-		error(0, 0, "mapping video memory +%uKB", len/1024); 
-	mem = mmap(NULL, len, wr ? PROT_WRITE : PROT_READ, MAP_SHARED, fd, offset);
+		error(0, 0, "mapping video memory +%uKB", videolen/1024); 
+	video = mmap(NULL, videolen, wr ? PROT_WRITE : PROT_READ, MAP_SHARED, fd, offset);
 
-	if (mem == MAP_FAILED)
+	if (video == MAP_FAILED)
 		error(1, errno, "mmap failed");
-	video = mem;
-	return mem;
+
+	/* malloc cache, for faster dump */
+#ifdef NOCACHE
+	videocache = video;
+#else
+	videocache = malloc(videolen);
+	if (wr)
+		memset(videocache, 0, videolen);
+	else
+		memcpy(videocache, video, videolen);
+#endif
 }
 
-static void putvideomemory(void)
+static void putvideomemory(int wr)
 {
-	munmap(video, fix_info.line_length*var_info.yres);
+#ifdef NOCACHE
+#else
+	if (wr)
+		memcpy(videocache, video, videolen);
+	free(videocache);
+#endif
+	munmap(video, videolen);
 }
 
 /* FRAMEBUFFER */
 static inline uint8_t *getfbpos(int x, int y)
 {
-	return video + (y+var_info.yoffset)*fix_info.line_length + (x+var_info.xoffset)*fbbypp;
+	return videocache + (y+var_info.yoffset)*fix_info.line_length + (x+var_info.xoffset)*fbbypp;
 }
 
 static inline uint8_t getfbcolor(uint32_t pixel, const struct fb_bitfield *bitfield, const uint16_t *colormap)
@@ -462,7 +478,7 @@ int main (int argc, char *argv[])
 			if (imgw > var_info.xres)
 				d8 += (imgw - var_info.xres)*ppmbypp;
 		}
-		putvideomemory();
+		putvideomemory(1);
 		free(dat);
 	} else if (getfbinfo(STDIN_FILENO) == 0) {
 		/* copy fb to ppm */
@@ -482,7 +498,7 @@ int main (int argc, char *argv[])
 			for (c = 0; c < w; ++c)
 				putppmpixel(getfbpixel(c, r));
 		}
-		putvideomemory();
+		putvideomemory(0);
 	} else {
 		error(1, errno, "no framebuffer on stdin or stdout?");
 	}
